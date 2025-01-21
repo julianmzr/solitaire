@@ -73,6 +73,9 @@ class _GameBoardState extends State<GameBoard> {
     initializeGame();
   }
 
+  // Add this getter for the foundation suit order
+  List<Suit> get foundationSuitOrder => [Suit.clubs, Suit.spades, Suit.hearts, Suit.diamonds];
+
   void initializeGame() {
     // Create and shuffle the deck
     deck = [];
@@ -86,6 +89,8 @@ class _GameBoardState extends State<GameBoard> {
     // Initialize tableau piles
     tableauPiles = List.generate(7, (index) => []);
     revealedCards = List.generate(7, (index) => []); // Reset revealed cards state
+    // Initialize foundation piles in the specific order
+    foundationPiles = List.generate(4, (_) => []);
     
     for (int i = 0; i < 7; i++) {
       for (int j = i; j < 7; j++) {
@@ -168,16 +173,33 @@ class _GameBoardState extends State<GameBoard> {
       return;
     }
 
+    // Handle foundation piles
+    if (sourcePileIndex <= -2) {  // Foundation pile indices are -2, -3, -4, -5
+      final foundationIndex = (-sourcePileIndex - 2);  // Convert back to 0-3 range
+      final draggedCard = foundationPiles[foundationIndex].last;
+      final targetCard = tableauPiles[targetPileIndex].isNotEmpty ? 
+                      tableauPiles[targetPileIndex].last : null;
+      
+      if (canDropCard(draggedCard, targetCard)) {
+        setState(() {
+          // Move card from foundation to tableau
+          tableauPiles[targetPileIndex].add(foundationPiles[foundationIndex].removeLast());
+          revealedCards[targetPileIndex].add(true);  // New card is always revealed
+        });
+      }
+      return;
+    }
+
     // Don't do anything if dropping on the same pile
     if (sourcePileIndex == targetPileIndex) return;
     
-    // Get the dragged card and target card
+    // Handle tableau to tableau moves
     final draggedCard = tableauPiles[sourcePileIndex][sourceCardIndex];
     final targetCard = tableauPiles[targetPileIndex].isNotEmpty ? 
                      tableauPiles[targetPileIndex].last : null;
     
     if (canDropCard(draggedCard, targetCard)) {
-    setState(() {
+      setState(() {
         // Move the card and all cards above it
         final cardsToMove = tableauPiles[sourcePileIndex].sublist(sourceCardIndex);
         final revealedStatesToMove = revealedCards[sourcePileIndex].sublist(sourceCardIndex);
@@ -198,7 +220,13 @@ class _GameBoardState extends State<GameBoard> {
     }
   }
 
+  // Update the canDropOnFoundation method to enforce suit order
   bool canDropOnFoundation(Card draggedCard, int foundationIndex) {
+    // Check if the card matches the designated suit for this foundation pile
+    if (draggedCard.suit != foundationSuitOrder[foundationIndex]) {
+      return false;
+    }
+
     if (foundationPiles[foundationIndex].isEmpty) {
       return draggedCard.rank == Rank.ace;  // Only aces can start a foundation pile
     }
@@ -206,6 +234,24 @@ class _GameBoardState extends State<GameBoard> {
     Card topCard = foundationPiles[foundationIndex].last;
     return draggedCard.suit == topCard.suit &&  // Must be same suit
            draggedCard.rank.index == topCard.rank.index + 1;  // Must be next rank up
+  }
+
+  // Update the findValidFoundationPile method to respect suit order
+  int? findValidFoundationPile(Card card) {
+    // Find the correct foundation index for this suit
+    int foundationIndex = foundationSuitOrder.indexOf(card.suit);
+    if (foundationIndex != -1 && canDropOnFoundation(card, foundationIndex)) {
+      return foundationIndex;
+    }
+    return null;
+  }
+
+  // Add this method to try moving a card to foundation
+  void tryMoveToFoundation(Card card, int sourcePileIndex, int sourceCardIndex) {
+    int? foundationIndex = findValidFoundationPile(card);
+    if (foundationIndex != null) {
+      handleFoundationDrop(foundationIndex, sourcePileIndex, sourceCardIndex);
+    }
   }
 
   void checkWin() {
@@ -301,24 +347,34 @@ class _GameBoardState extends State<GameBoard> {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: wastePile.isNotEmpty
-                                ? Draggable<Map<String, dynamic>>(
-                                    data: {
-                                      'pile': -1,  // Special indicator for waste pile
-                                      'index': wastePile.length - 1,
+                                ? GestureDetector(
+                                    onTap: () {
+                                      // Try to move top waste card to foundation
+                                      tryMoveToFoundation(
+                                        wastePile.first,
+                                        -1,  // Special indicator for waste pile
+                                        0
+                                      );
                                     },
-                                    feedback: PlayingCard(
-                                      card: wastePile.first,
-                                      isFaceUp: true,
-                                    ),
-                                    childWhenDragging: wastePile.length > 1
-                                      ? PlayingCard(
-                                          card: wastePile[1],
-                                          isFaceUp: true,
-                                        )
-                                      : const SizedBox.shrink(),
-                                    child: PlayingCard(
-                                      card: wastePile.first,
-                                      isFaceUp: true,
+                                    child: Draggable<Map<String, dynamic>>(
+                                      data: {
+                                        'pile': -1,  // Special indicator for waste pile
+                                        'index': wastePile.length - 1,
+                                      },
+                                      feedback: PlayingCard(
+                                        card: wastePile.first,
+                                        isFaceUp: true,
+                                      ),
+                                      childWhenDragging: wastePile.length > 1
+                                        ? PlayingCard(
+                                            card: wastePile[1],
+                                            isFaceUp: true,
+                                          )
+                                        : const SizedBox.shrink(),
+                                      child: PlayingCard(
+                                        card: wastePile.first,
+                                        isFaceUp: true,
+                                      ),
                                     ),
                                   )
                                 : const SizedBox.shrink(),
@@ -353,16 +409,46 @@ class _GameBoardState extends State<GameBoard> {
                                       ),
                                       borderRadius: BorderRadius.circular(8),
                                     ),
-                                    child: foundationPiles[index].isNotEmpty ? PlayingCard(
-                                      card: foundationPiles[index].last,
-                                      isFaceUp: true,
-                                    ) : candidateData.isNotEmpty ? const Center(
-                                      child: Icon(
-                                        Icons.add_circle_outline,
-                                        color: Colors.yellow,
-                                        size: 32,
-                                      ),
-                                    ) : null,
+                                    child: foundationPiles[index].isNotEmpty ? 
+                                      Draggable<Map<String, dynamic>>(
+                                        data: {
+                                          'pile': -2 - index,  // Special indicator for foundation piles (-2, -3, -4, -5)
+                                          'index': foundationPiles[index].length - 1,
+                                        },
+                                        feedback: PlayingCard(
+                                          card: foundationPiles[index].last,
+                                          isFaceUp: true,
+                                        ),
+                                        child: PlayingCard(
+                                          card: foundationPiles[index].last,
+                                          isFaceUp: true,
+                                        ),
+                                      ) : Stack(
+                                      children: [
+                                        if (candidateData.isNotEmpty)
+                                          const Center(
+                                            child: Icon(
+                                              Icons.add_circle_outline,
+                                              color: Colors.yellow,
+                                              size: 32,
+                                            ),
+                                          ),
+                                        Center(
+                                          child: Text(
+                                            foundationSuitOrder[index].toString() == 'Suit.hearts' ? '♥' :
+                                            foundationSuitOrder[index].toString() == 'Suit.diamonds' ? '♦' :
+                                            foundationSuitOrder[index].toString() == 'Suit.clubs' ? '♣' : '♠',
+                                            style: TextStyle(
+                                              fontSize: 32,
+                                              color: foundationSuitOrder[index] == Suit.hearts || 
+                                                    foundationSuitOrder[index] == Suit.diamonds ? 
+                                                    Colors.red.withOpacity(0.5) : 
+                                                    Colors.black.withOpacity(0.5),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   );
                                 },
                               ),
@@ -439,8 +525,17 @@ class _GameBoardState extends State<GameBoard> {
                                             height: 120,
                                             child: GestureDetector(
                                               onTap: () {
-                                                if (cardIndex == tableauPiles[pileIndex].length - 1 && !isRevealed) {
-                                                  revealCard(pileIndex);
+                                                if (cardIndex == tableauPiles[pileIndex].length - 1) {
+                                                  if (!isRevealed) {
+                                                    revealCard(pileIndex);
+                                                  } else {
+                                                    // Try to move revealed top card to foundation
+                                                    tryMoveToFoundation(
+                                                      tableauPiles[pileIndex][cardIndex],
+                                                      pileIndex,
+                                                      cardIndex
+                                                    );
+                                                  }
                                                 }
                                               },
                                               child: Draggable<Map<String, dynamic>>(
