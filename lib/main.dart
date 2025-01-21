@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:ui';  // Add this import for ImageFilter
+import 'dart:math'; // Add this import for sin function
 
 // Add these enums at the top of the file
 enum Suit { hearts, diamonds, clubs, spades }
@@ -46,7 +48,102 @@ class SolitaireApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
         useMaterial3: true,
       ),
-      home: const GameBoard(),
+      home: const SplashScreen(),
+    );
+  }
+}
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _rotateAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeOutBack,
+      ),
+    );
+
+    _rotateAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeInOutBack,
+      ),
+    );
+
+    _controller.forward().then((_) {
+      Future.delayed(const Duration(milliseconds: 200), () {
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) => const GameBoard(),
+              transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: child,
+                );
+              },
+              transitionDuration: const Duration(milliseconds: 400),
+            ),
+          );
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.green[800],
+      body: Center(
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            return Transform.scale(
+              scale: _scaleAnimation.value,
+              child: Transform.rotate(
+                angle: _rotateAnimation.value * 3.14159,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    PlayingCard(
+                      card: Card(Suit.hearts, Rank.ace),
+                      isFaceUp: true,
+                    ),
+                    const SizedBox(width: 8),
+                    PlayingCard(
+                      card: Card(Suit.spades, Rank.king),
+                      isFaceUp: true,
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -58,23 +155,26 @@ class GameBoard extends StatefulWidget {
   State<GameBoard> createState() => _GameBoardState();
 }
 
-class _GameBoardState extends State<GameBoard> {
+class _GameBoardState extends State<GameBoard> with TickerProviderStateMixin {
   late List<List<Card>> tableauPiles;
   late List<Card> deck;
   List<Card> wastePile = [];
-  List<List<bool>> revealedCards = List.generate(7, (_) => []); // Track revealed state
+  List<List<bool>> revealedCards = List.generate(7, (_) => []);
   List<List<Card>> foundationPiles = List.generate(4, (_) => []);
-  Map<String, int>? draggedCard;  // Add this property
+  Map<String, int>? draggedCard;
   bool showWinAnimation = false;
+  bool isDealing = false;
+  List<AnimationController> dealingControllers = [];
+  List<Animation<Offset>> dealingAnimations = [];
+  List<Card> cardsToAnimate = [];
+  List<bool> cardsFaceUp = [];
+  late TableauLayoutInfo layoutInfo;
 
   @override
   void initState() {
     super.initState();
     initializeGame();
   }
-
-  // Add this getter for the foundation suit order
-  List<Suit> get foundationSuitOrder => [Suit.clubs, Suit.spades, Suit.hearts, Suit.diamonds];
 
   void initializeGame() {
     // Create and shuffle the deck
@@ -86,20 +186,117 @@ class _GameBoardState extends State<GameBoard> {
     }
     deck.shuffle();
 
-    // Initialize tableau piles
+    // Initialize tableau piles and revealed cards
     tableauPiles = List.generate(7, (index) => []);
-    revealedCards = List.generate(7, (index) => []); // Reset revealed cards state
-    // Initialize foundation piles in the specific order
+    revealedCards = List.generate(7, (index) => []); 
     foundationPiles = List.generate(4, (_) => []);
+
+    // Prepare cards for animation
+    cardsToAnimate = [];
+    cardsFaceUp = [];
+    int totalCards = 28; // Sum of cards 1+2+3+4+5+6+7
     
-    for (int i = 0; i < 7; i++) {
-      for (int j = i; j < 7; j++) {
-        tableauPiles[j].add(deck.removeLast());
-        // Initialize revealed state (true for top cards)
-        revealedCards[j].add(j == i);
-      }
+    // Create animation controllers and animations
+    for (var controller in dealingControllers) {
+      controller.dispose();
     }
+    dealingControllers = [];
+    dealingAnimations = [];
+
+    // Calculate card positions and create animations
+    for (int i = 0; i < totalCards; i++) {
+      var card = deck.removeLast();
+      cardsToAnimate.add(card);
+      
+      // Calculate which pile this card belongs to and its position in the pile
+      int pileIndex = 0;
+      int cardPositionInPile = 0;
+      int tempCount = i;
+      while (tempCount >= 0) {
+        pileIndex++;
+        tempCount -= pileIndex;
+      }
+      pileIndex--;
+      cardPositionInPile = i - ((pileIndex * (pileIndex + 1)) ~/ 2);
+      
+      // Calculate if card should be face up (only the top card of each pile)
+      bool isFaceUp = cardPositionInPile == pileIndex;
+      cardsFaceUp.add(isFaceUp);
+
+      var controller = AnimationController(
+        duration: const Duration(milliseconds: 600),  // Faster animation
+        vsync: this,
+      );
+      
+      dealingControllers.add(controller);
+      
+      // Create a curved animation path
+      dealingAnimations.add(
+        TweenSequence<Offset>([
+          TweenSequenceItem(
+            tween: Tween<Offset>(
+              begin: const Offset(0, 0),
+              end: Offset(pileIndex.toDouble() * 0.3, -2.0), // Initial upward arc
+            ).chain(CurveTween(curve: Curves.easeOut)),
+            weight: 30.0,
+          ),
+          TweenSequenceItem(
+            tween: Tween<Offset>(
+              begin: Offset(pileIndex.toDouble() * 0.3, -2.0),
+              end: Offset(pileIndex.toDouble() * 0.7, -2.5), // Peak of arc
+            ).chain(CurveTween(curve: Curves.linear)),
+            weight: 30.0,
+          ),
+          TweenSequenceItem(
+            tween: Tween<Offset>(
+              begin: Offset(pileIndex.toDouble() * 0.7, -2.5),
+              end: Offset(pileIndex.toDouble(), cardPositionInPile.toDouble()), // Land in final position
+            ).chain(CurveTween(curve: Curves.easeInOutBack)),
+            weight: 40.0,
+          ),
+        ]).animate(controller),
+      );
+    }
+
+    // Start dealing animation
+    isDealing = true;
+    dealCards();
   }
+
+  void dealCards() async {
+    // Shorter initial delay
+    await Future.delayed(const Duration(milliseconds: 300));
+    
+    // Deal cards one by one with a shorter delay
+    for (int i = 0; i < dealingControllers.length; i++) {
+      if (!mounted) return;
+      
+      dealingControllers[i].forward();
+      
+      // Much shorter delay between each card for a snappier feel
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+
+    // Wait for all animations to complete
+    await Future.delayed(const Duration(milliseconds: 800));
+    
+    if (!mounted) return;
+    setState(() {
+      isDealing = false;
+      // Deal the cards to their final positions
+      int cardIndex = 0;
+      for (int pile = 0; pile < 7; pile++) {
+        for (int j = 0; j <= pile; j++) {
+          tableauPiles[pile].add(cardsToAnimate[cardIndex]);
+          revealedCards[pile].add(cardsFaceUp[cardIndex]);
+          cardIndex++;
+        }
+      }
+    });
+  }
+
+  // Add this getter for the foundation suit order
+  List<Suit> get foundationSuitOrder => [Suit.clubs, Suit.spades, Suit.hearts, Suit.diamonds];
 
   void drawCard() {
     setState(() {
@@ -296,28 +493,118 @@ class _GameBoardState extends State<GameBoard> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        Scaffold(
-          appBar: AppBar(
-            title: const Text('Solitaire'),
-            backgroundColor: Colors.green[700],
+        // Background decoration
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.green[800]!,
+                Colors.green[600]!,
+              ],
+            ),
+            image: const DecorationImage(
+              image: NetworkImage('https://www.transparenttextures.com/patterns/felt.png'),
+              repeat: ImageRepeat.repeat,
+            ),
           ),
-          backgroundColor: Colors.green,
+        ),
+        // Game content
+        Scaffold(
+          backgroundColor: Colors.transparent,
           body: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16.0, 64.0, 16.0, 16.0),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  return Column(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Check if device is in portrait mode
+                final isPortrait = constraints.maxHeight > constraints.maxWidth;
+                
+                if (isPortrait) {
+                  return Container(
+                    color: Colors.black87,
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32.0),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.screen_rotation,
+                              color: Colors.white,
+                              size: 96,
+                            ),
+                            const SizedBox(height: 24),
+                            const Text(
+                              'Please rotate your device',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Solitaire works best in landscape mode',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.8),
+                                fontSize: 24,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }
+
+                // Calculate card dimensions based on screen size
+                final cardWidth = constraints.maxWidth < 750 ? 
+                    constraints.maxWidth / 9 : // For smaller screens
+                    140.0; // Increased from 100.0 for larger screens
+                final cardHeight = cardWidth * 1.5;
+                final cardSpacing = constraints.maxWidth < 750 ?
+                    constraints.maxWidth / 45 : // For smaller screens
+                    24.0; // Increased from 16.0 for larger screens
+                final verticalSpacing = cardHeight * 0.25; // Increased from 0.2 for more spacing between stacked cards
+
+                // Calculate maximum height needed for the game
+                final maxCardsInColumn = 13; // Maximum possible cards in a tableau column
+                final totalHeightNeeded = cardHeight + (maxCardsInColumn * verticalSpacing);
+                
+                // If the needed height is more than available height, scale everything down
+                final scale = totalHeightNeeded > (constraints.maxHeight - cardSpacing * 2) ?
+                    (constraints.maxHeight - cardSpacing * 2) / totalHeightNeeded :
+                    1.0;
+                
+                final scaledCardWidth = cardWidth * scale;
+                final scaledCardHeight = cardHeight * scale;
+                final scaledVerticalSpacing = verticalSpacing * scale;
+                final scaledCardSpacing = cardSpacing * scale;
+
+                // Create layout info
+                layoutInfo = TableauLayoutInfo(
+                  cardWidth: scaledCardWidth,
+                  cardHeight: scaledCardHeight,
+                  cardSpacing: scaledCardSpacing,
+                  verticalSpacing: scaledVerticalSpacing,
+                  constraints: constraints,
+                );
+
+                return Padding(
+                  padding: EdgeInsets.all(scaledCardSpacing),
+                  child: Stack(
                     children: [
                       // Top row with deck and foundation piles
                       SizedBox(
-                        height: constraints.maxHeight * 0.2,
+                        height: scaledCardHeight * 1.2,
                         child: Row(
                           children: [
                             // Deck
                             Container(
-                              width: 80,
-                              height: 120,
+                              width: scaledCardWidth,
+                              height: scaledCardHeight,
                               decoration: BoxDecoration(
                                 border: Border.all(color: Colors.white30, width: 2),
                                 borderRadius: BorderRadius.circular(8),
@@ -325,23 +612,27 @@ class _GameBoardState extends State<GameBoard> {
                               child: GestureDetector(
                                 onTap: drawCard,
                                 child: deck.isNotEmpty
-                                  ? PlayingCard(isFaceUp: false)
+                                  ? PlayingCard(
+                                      isFaceUp: false,
+                                      width: scaledCardWidth,
+                                      height: scaledCardHeight,
+                                    )
                                   : wastePile.isNotEmpty 
-                                    ? const Center(
+                                    ? Center(
                                         child: Icon(
                                           Icons.refresh_rounded,
                                           color: Colors.white70,
-                                          size: 32,
+                                          size: 48 * scale,
                                         ),
                                       )
                                     : const SizedBox.shrink(),
                               ),
                             ),
-                            const SizedBox(width: 16),
+                            SizedBox(width: cardSpacing),
                             // Waste pile
                             Container(
-                              width: 80,
-                              height: 120,
+                              width: scaledCardWidth,
+                              height: scaledCardHeight,
                               decoration: BoxDecoration(
                                 border: Border.all(color: Colors.white30, width: 2),
                                 borderRadius: BorderRadius.circular(8),
@@ -364,16 +655,22 @@ class _GameBoardState extends State<GameBoard> {
                                       feedback: PlayingCard(
                                         card: wastePile.first,
                                         isFaceUp: true,
+                                        width: scaledCardWidth,
+                                        height: scaledCardHeight,
                                       ),
                                       childWhenDragging: wastePile.length > 1
                                         ? PlayingCard(
                                             card: wastePile[1],
                                             isFaceUp: true,
+                                            width: scaledCardWidth,
+                                            height: scaledCardHeight,
                                           )
                                         : const SizedBox.shrink(),
                                       child: PlayingCard(
                                         card: wastePile.first,
                                         isFaceUp: true,
+                                        width: scaledCardWidth,
+                                        height: scaledCardHeight,
                                       ),
                                     ),
                                   )
@@ -382,7 +679,7 @@ class _GameBoardState extends State<GameBoard> {
                             const Spacer(),
                             // Foundation piles
                             ...List.generate(4, (index) => Padding(
-                              padding: const EdgeInsets.only(left: 16),
+                              padding: EdgeInsets.only(left: scaledCardSpacing),
                               child: DragTarget<Map<String, dynamic>>(
                                 onWillAccept: (data) {
                                   if (data == null) return false;
@@ -400,8 +697,8 @@ class _GameBoardState extends State<GameBoard> {
                                 },
                                 builder: (context, candidateData, rejectedData) {
                                   return Container(
-                                    width: 80,
-                                    height: 120,
+                                    width: scaledCardWidth,
+                                    height: scaledCardHeight,
                                     decoration: BoxDecoration(
                                       border: Border.all(
                                         color: candidateData.isNotEmpty ? Colors.yellow : Colors.white30,
@@ -418,19 +715,23 @@ class _GameBoardState extends State<GameBoard> {
                                         feedback: PlayingCard(
                                           card: foundationPiles[index].last,
                                           isFaceUp: true,
+                                          width: scaledCardWidth,
+                                          height: scaledCardHeight,
                                         ),
                                         child: PlayingCard(
                                           card: foundationPiles[index].last,
                                           isFaceUp: true,
+                                          width: scaledCardWidth,
+                                          height: scaledCardHeight,
                                         ),
                                       ) : Stack(
                                       children: [
                                         if (candidateData.isNotEmpty)
-                                          const Center(
+                                          Center(
                                             child: Icon(
                                               Icons.add_circle_outline,
                                               color: Colors.yellow,
-                                              size: 32,
+                                              size: 48 * scale,
                                             ),
                                           ),
                                         Center(
@@ -439,7 +740,7 @@ class _GameBoardState extends State<GameBoard> {
                                             foundationSuitOrder[index].toString() == 'Suit.diamonds' ? '♦' :
                                             foundationSuitOrder[index].toString() == 'Suit.clubs' ? '♣' : '♠',
                                             style: TextStyle(
-                                              fontSize: 32,
+                                              fontSize: 48 * scale,
                                               color: foundationSuitOrder[index] == Suit.hearts || 
                                                     foundationSuitOrder[index] == Suit.diamonds ? 
                                                     Colors.red.withOpacity(0.5) : 
@@ -456,201 +757,144 @@ class _GameBoardState extends State<GameBoard> {
                           ],
                         ),
                       ),
-                      const SizedBox(height: 32),
-                      // Tableau piles
-                      Expanded(
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: List.generate(7, (pileIndex) {
-                            return DragTarget<Map<String, dynamic>>(
-                              onWillAccept: (data) {
-                                if (data == null) return false;
-                                final sourcePileIndex = data['pile'] as int;
-                                final sourceCardIndex = data['index'] as int;
-                                final draggedCard = sourcePileIndex == -1 ? 
-                                                   wastePile.first : 
-                                                   tableauPiles[sourcePileIndex][sourceCardIndex];
-                                
-                                // If pile is empty, accept any card
-                                if (tableauPiles[pileIndex].isEmpty) {
-                                  return true;
-                                }
-                                
-                                final targetCard = tableauPiles[pileIndex].last;
-                                return canDropCard(draggedCard, targetCard);
-                              },
-                              onAccept: (data) => handleCardDrop(data, pileIndex),
-                              builder: (context, candidateData, rejectedData) {
-                                return Stack(
-                                  clipBehavior: Clip.none,
-                                  children: [
-                                    // Base container with drop indicator
-                                    Container(
-                                      width: 80,
-                                      height: tableauPiles[pileIndex].isEmpty ? 120 : (tableauPiles[pileIndex].length * 20.0 + 120),
-                                      decoration: BoxDecoration(
-                                        border: tableauPiles[pileIndex].isEmpty ? Border.all(
-                                          color: candidateData.isNotEmpty ? Colors.yellow : Colors.white30,
-                                          width: candidateData.isNotEmpty ? 3 : 1,
-                                        ) : null,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: candidateData.isNotEmpty && tableauPiles[pileIndex].isEmpty ? const Center(
-                                        child: Icon(
-                                          Icons.add_circle_outline,
-                                          color: Colors.yellow,
-                                          size: 32,
-                                        ),
-                                      ) : null,
-                                    ),
-                                    // Cards
-                                    ...List.generate(
-                                      tableauPiles[pileIndex].length,
-                                      (cardIndex) {
-                                        bool isRevealed = revealedCards[pileIndex][cardIndex];
-                                        bool isDragging = false;
-                                        
-                                        // Check if this card is part of a dragged stack
-                                        if (draggedCard != null && 
-                                            draggedCard!['pile'] == pileIndex && 
-                                            cardIndex >= draggedCard!['index']!) {
-                                          isDragging = true;
-                                        }
-                                        
-                                        return Positioned(
-                                          top: cardIndex * 20.0,
-                                          child: SizedBox(
-                                            width: 80,
-                                            height: 120,
-                                            child: GestureDetector(
-                                              onTap: () {
-                                                if (cardIndex == tableauPiles[pileIndex].length - 1) {
-                                                  if (!isRevealed) {
-                                                    revealCard(pileIndex);
-                                                  } else {
-                                                    // Try to move revealed top card to foundation
-                                                    tryMoveToFoundation(
-                                                      tableauPiles[pileIndex][cardIndex],
-                                                      pileIndex,
-                                                      cardIndex
-                                                    );
-                                                  }
-                                                }
-                                              },
-                                              child: Draggable<Map<String, dynamic>>(
-                                                data: {
-                                                  'pile': pileIndex,
-                                                  'index': cardIndex,
-                                                },
-                                                feedback: isRevealed ? Stack(
-                                                  clipBehavior: Clip.none,
-                                                  children: [
-                                                    PlayingCard(
-                                                      card: tableauPiles[pileIndex][cardIndex],
-                                                      isFaceUp: true,
-                                                    ),
-                                                    // Only add cards above if this isn't the last card
-                                                    if (cardIndex < tableauPiles[pileIndex].length - 1)
-                                                      ...List.generate(
-                                                        tableauPiles[pileIndex].length - cardIndex - 1,
-                                                        (i) => Positioned(
-                                                          top: (i + 1) * 20.0,
-                                                          child: PlayingCard(
-                                                            card: tableauPiles[pileIndex][cardIndex + i + 1],
-                                                            isFaceUp: true,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                  ],
-                                                ) : Container(),
-                                                childWhenDragging: isRevealed ? Container(
-                                                  width: 80,
-                                                  height: tableauPiles[pileIndex].length * 20.0 + 120,
-                                                  color: Colors.transparent,
-                                                ) : Container(),
-                                                dragAnchorStrategy: (draggable, context, dragPosition) {
-                                                  final RenderBox renderObject = context.findRenderObject() as RenderBox;
-                                                  final localPosition = renderObject.globalToLocal(dragPosition);
-                                                  return localPosition;
-                                                },
-                                                maxSimultaneousDrags: canDragCard(pileIndex, cardIndex) ? 1 : 0,
-                                                child: Opacity(
-                                                  opacity: isDragging ? 0.0 : 1.0,
-                                                  child: PlayingCard(
-                                                    card: tableauPiles[pileIndex][cardIndex],
-                                                    isFaceUp: isRevealed,
-                                                  ),
-                                                ),
-                                                onDragStarted: () {
-                                                  setState(() {
-                                                    draggedCard = {
-                                                      'pile': pileIndex,
-                                                      'index': cardIndex,
-                                                    };
-                                                  });
-                                                },
-                                                onDragEnd: (_) {
-                                                  setState(() {
-                                                    draggedCard = null;
-                                                  });
-                                                },
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ],
-                                );
-                              },
-                            );
-                          }),
-                        ),
+                      // Tableau piles - remove the Column and Expanded
+                      TableauLayout(
+                        layoutInfo: layoutInfo,
+                        tableauPiles: tableauPiles,
+                        revealedCards: revealedCards,
+                        draggedCard: draggedCard,
+                        onDrop: handleCardDrop,
+                        onCardTap: (pileIndex, cardIndex) {
+                          if (cardIndex == tableauPiles[pileIndex].length - 1) {
+                            if (!revealedCards[pileIndex][cardIndex]) {
+                              revealCard(pileIndex);
+                            } else {
+                              tryMoveToFoundation(
+                                tableauPiles[pileIndex][cardIndex],
+                                pileIndex,
+                                cardIndex
+                              );
+                            }
+                          }
+                        },
+                        onDragStarted: (pileIndex, cardIndex) {
+                          setState(() {
+                            draggedCard = {
+                              'pile': pileIndex,
+                              'index': cardIndex,
+                            };
+                          });
+                        },
+                        onDragEnd: () {
+                          setState(() {
+                            draggedCard = null;
+                          });
+                        },
+                        wastePile: wastePile,
                       ),
+                      if (isDealing)
+                        DealingAnimation(
+                          layoutInfo: layoutInfo,
+                          cardsToAnimate: cardsToAnimate,
+                          cardsFaceUp: cardsFaceUp,
+                          dealingControllers: dealingControllers,
+                          dealingAnimations: dealingAnimations,
+                        ),
                     ],
-                  );
-                },
-              ),
+                  ),
+                );
+              },
             ),
           ),
         ),
         if (showWinAnimation)
-          Container(
-            color: Colors.black54,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text(
-                    '🎉 Congratulations! 🎉',
-                    style: TextStyle(
-                      fontSize: 32,
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
+          // Enhanced win animation
+          TweenAnimationBuilder<double>(
+            tween: Tween<double>(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 800),
+            builder: (context, value, child) {
+              return Container(
+                color: Colors.black54.withOpacity(0.7 * value),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 5 * value, sigmaY: 5 * value),
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Transform.scale(
+                          scale: value,
+                          child: const Text(
+                            '🎉 Congratulations! 🎉',
+                            style: TextStyle(
+                              fontSize: 48,
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              shadows: [
+                                Shadow(
+                                  color: Colors.black26,
+                                  offset: Offset(2, 2),
+                                  blurRadius: 4,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Transform.scale(
+                          scale: value,
+                          child: const Text(
+                            'You won!',
+                            style: TextStyle(
+                              fontSize: 32,
+                              color: Colors.white,
+                              shadows: [
+                                Shadow(
+                                  color: Colors.black26,
+                                  offset: Offset(2, 2),
+                                  blurRadius: 4,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                        Transform.scale(
+                          scale: value,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                showWinAnimation = false;
+                                initializeGame();
+                              });
+                            },
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 32,
+                                vertical: 16,
+                              ),
+                              backgroundColor: Colors.green[600],
+                              foregroundColor: Colors.white,
+                              elevation: 8,
+                              shadowColor: Colors.black54,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                            child: const Text(
+                              'Play Again',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'You won!',
-                    style: TextStyle(
-                      fontSize: 24,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  ElevatedButton(
-                    onPressed: () {
-                      setState(() {
-                        showWinAnimation = false;
-                        initializeGame();
-                      });
-                    },
-                    child: const Text('Play Again'),
-                  ),
-                ],
-              ),
-            ),
+                ),
+              );
+            },
           ),
       ],
     );
@@ -660,40 +904,73 @@ class _GameBoardState extends State<GameBoard> {
 class PlayingCard extends StatelessWidget {
   final Card? card;
   final bool isFaceUp;
+  final double? width;
+  final double? height;
   
   const PlayingCard({
     super.key,
     this.card,
     required this.isFaceUp,
+    this.width,
+    this.height,
   });
 
   @override
   Widget build(BuildContext context) {
+    final actualWidth = width ?? 80.0;
+    final actualHeight = height ?? 120.0;
+    final scale = actualWidth / 80.0; // Base scale factor
+
     return Container(
-      width: 80,
-      height: 120,
+      width: actualWidth,
+      height: actualHeight,
       decoration: BoxDecoration(
         color: isFaceUp ? Colors.white : Colors.blue[900],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white, width: 1),
+        borderRadius: BorderRadius.circular(8 * scale),
+        border: Border.all(color: Colors.white, width: 1 * scale),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.2),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
+            blurRadius: 4 * scale,
+            offset: Offset(0, 2 * scale),
           ),
         ],
+        gradient: !isFaceUp ? LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Colors.blue[900]!,
+            Colors.blue[800]!,
+          ],
+        ) : null,
       ),
       child: isFaceUp && card != null
-        ? Padding(
-            padding: const EdgeInsets.all(4.0),
+        ? Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8 * scale),
+              color: Colors.white,
+            ),
+            padding: EdgeInsets.all(4.0 * scale),
             child: Stack(
               children: [
+                // Card background pattern
+                Center(
+                  child: Text(
+                    card!.suitString,
+                    style: TextStyle(
+                      fontSize: 72 * scale,  // Scale the center suit icon
+                      color: card!.isRed ? 
+                        Colors.red.withOpacity(0.1) : 
+                        Colors.black.withOpacity(0.1),
+                    ),
+                  ),
+                ),
                 // Top-left rank and suit
                 Text(
                   '${card!.rankString}${card!.suitString}',
                   style: TextStyle(
-                    fontSize: 18,
+                    fontSize: 24 * scale,  // Scale the corner text
+                    fontWeight: FontWeight.bold,
                     color: card!.isRed ? Colors.red : Colors.black,
                     height: 1,
                   ),
@@ -703,11 +980,12 @@ class PlayingCard extends StatelessWidget {
                   right: 0,
                   bottom: 0,
                   child: Transform.rotate(
-                    angle: 3.14159, // 180 degrees in radians
+                    angle: 3.14159,
                     child: Text(
                       '${card!.rankString}${card!.suitString}',
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 24 * scale,  // Scale the corner text
+                        fontWeight: FontWeight.bold,
                         color: card!.isRed ? Colors.red : Colors.black,
                         height: 1,
                       ),
@@ -719,14 +997,336 @@ class PlayingCard extends StatelessWidget {
           )
         : Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(8 * scale),
               gradient: LinearGradient(
                 colors: [Colors.blue[900]!, Colors.blue[800]!],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
+              image: const DecorationImage(
+                image: NetworkImage('https://www.transparenttextures.com/patterns/diamond-upholstery.png'),
+                repeat: ImageRepeat.repeat,
+                opacity: 0.1,
+              ),
+            ),
+            child: Center(
+              child: Text(
+                '♠',
+                style: TextStyle(
+                  color: Colors.blue[200],
+                  fontSize: 32 * scale,  // Scale the back icon
+                ),
+              ),
             ),
           ),
+    );
+  }
+}
+
+// Add new classes for layout management
+class TableauLayoutInfo {
+  final double cardWidth;
+  final double cardHeight;
+  final double cardSpacing;
+  final double verticalSpacing;
+  final BoxConstraints constraints;
+
+  TableauLayoutInfo({
+    required this.cardWidth,
+    required this.cardHeight,
+    required this.cardSpacing,
+    required this.verticalSpacing,
+    required this.constraints,
+  });
+
+  Offset getPilePosition(int pileIndex) {
+    final availableWidth = constraints.maxWidth - (2 * cardSpacing);
+    final totalCardWidth = cardWidth * 7;
+    final remainingSpace = availableWidth - totalCardWidth;
+    final evenSpace = remainingSpace / 8;
+    
+    final x = cardSpacing + (evenSpace + (cardWidth + evenSpace) * pileIndex);
+    final y = cardHeight * 1.2 + cardSpacing;  // Align with top row height
+    
+    return Offset(x, y);
+  }
+
+  Offset getCardPosition(int pileIndex, int cardIndex) {
+    final pilePos = getPilePosition(pileIndex);
+    return Offset(pilePos.dx, pilePos.dy + cardIndex * verticalSpacing);
+  }
+
+  Offset getDeckPosition() {
+    return Offset(cardSpacing, 0);  // Align with top row
+  }
+}
+
+class TableauLayout extends StatelessWidget {
+  final TableauLayoutInfo layoutInfo;
+  final List<List<Card>> tableauPiles;
+  final List<List<bool>> revealedCards;
+  final Map<String, int>? draggedCard;
+  final Function(Map<String, dynamic>, int) onDrop;
+  final Function(int, int) onCardTap;
+  final Function(int, int) onDragStarted;
+  final Function() onDragEnd;
+  final List<Card> wastePile;
+
+  const TableauLayout({
+    super.key,
+    required this.layoutInfo,
+    required this.tableauPiles,
+    required this.revealedCards,
+    required this.draggedCard,
+    required this.onDrop,
+    required this.onCardTap,
+    required this.onDragStarted,
+    required this.onDragEnd,
+    required this.wastePile,
+  });
+
+  bool canDropCard(Card draggedCard, Card? targetCard) {
+    if (targetCard == null) {
+      return true; // Allow any card to be placed on empty spots
+    }
+    
+    // Check if cards are alternate colors and sequential
+    return draggedCard.isRed != targetCard.isRed && 
+           draggedCard.rank.index == targetCard.rank.index - 1;
+  }
+
+  bool canDragCard(int pileIndex, int cardIndex) {
+    // Can drag if:
+    // 1. The card is revealed AND
+    // 2. All cards above it are also revealed
+    if (!revealedCards[pileIndex][cardIndex]) return false;
+    
+    // Check if all cards above are revealed
+    for (int i = cardIndex; i < tableauPiles[pileIndex].length; i++) {
+      if (!revealedCards[pileIndex][i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = layoutInfo.cardWidth / 80.0;
+    final devicePixelRatio = MediaQuery.of(context).devicePixelRatio;
+
+    return Stack(
+      children: List.generate(7, (pileIndex) {
+        final pilePosition = layoutInfo.getPilePosition(pileIndex);
+        
+        return Positioned(
+          left: pilePosition.dx,
+          top: pilePosition.dy,
+          child: DragTarget<Map<String, dynamic>>(
+            onWillAccept: (data) {
+              if (data == null) return false;
+              final sourcePileIndex = data['pile'] as int;
+              final sourceCardIndex = data['index'] as int;
+              final draggedCard = sourcePileIndex == -1 ? 
+                               wastePile.first : 
+                               tableauPiles[sourcePileIndex][sourceCardIndex];
+              
+              if (tableauPiles[pileIndex].isEmpty) {
+                return true;
+              }
+              
+              final targetCard = tableauPiles[pileIndex].last;
+              return canDropCard(draggedCard, targetCard);
+            },
+            onAccept: (data) => onDrop(data, pileIndex),
+            builder: (context, candidateData, rejectedData) {
+              return Stack(
+                children: [
+                  // Base container
+                  Container(
+                    width: layoutInfo.cardWidth,
+                    height: tableauPiles[pileIndex].isEmpty ? 
+                        layoutInfo.cardHeight : 
+                        (tableauPiles[pileIndex].length * layoutInfo.verticalSpacing + layoutInfo.cardHeight),
+                    decoration: BoxDecoration(
+                      border: tableauPiles[pileIndex].isEmpty ? Border.all(
+                        color: candidateData.isNotEmpty ? Colors.yellow : Colors.white30,
+                        width: candidateData.isNotEmpty ? 3 : 1,
+                      ) : null,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: candidateData.isNotEmpty && tableauPiles[pileIndex].isEmpty ? Center(
+                      child: Icon(
+                        Icons.add_circle_outline,
+                        color: Colors.yellow,
+                        size: 48 * scale,
+                      ),
+                    ) : null,
+                  ),
+                  // Cards
+                  ...List.generate(
+                    tableauPiles[pileIndex].length,
+                    (cardIndex) {
+                      bool isRevealed = revealedCards[pileIndex][cardIndex];
+                      bool isDragging = draggedCard != null && 
+                          draggedCard!['pile'] == pileIndex && 
+                          cardIndex >= draggedCard!['index']!;
+                      
+                      return Positioned(
+                        top: cardIndex * layoutInfo.verticalSpacing,
+                        child: SizedBox(
+                          width: layoutInfo.cardWidth,
+                          height: layoutInfo.cardHeight,
+                          child: GestureDetector(
+                            onTap: () {
+                              onCardTap(pileIndex, cardIndex);
+                            },
+                            child: Draggable<Map<String, dynamic>>(
+                              data: {
+                                'pile': pileIndex,
+                                'index': cardIndex,
+                              },
+                              feedback: isRevealed ? Material(
+                                type: MaterialType.transparency,
+                                color: Colors.transparent,
+                                elevation: 0,
+                                child: Container(
+                                  width: layoutInfo.cardWidth,
+                                  height: layoutInfo.cardHeight + 
+                                    ((tableauPiles[pileIndex].length - cardIndex - 1) * layoutInfo.verticalSpacing),
+                                  child: Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      PlayingCard(
+                                        card: tableauPiles[pileIndex][cardIndex],
+                                        isFaceUp: true,
+                                        width: layoutInfo.cardWidth,
+                                        height: layoutInfo.cardHeight,
+                                      ),
+                                      // Only add cards above if this isn't the last card
+                                      if (cardIndex < tableauPiles[pileIndex].length - 1)
+                                        ...List.generate(
+                                          tableauPiles[pileIndex].length - cardIndex - 1,
+                                          (i) => Positioned(
+                                            top: (i + 1) * layoutInfo.verticalSpacing,
+                                            child: PlayingCard(
+                                              card: tableauPiles[pileIndex][cardIndex + i + 1],
+                                              isFaceUp: true,
+                                              width: layoutInfo.cardWidth,
+                                              height: layoutInfo.cardHeight,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ) : Container(),
+                              dragAnchorStrategy: (draggable, context, position) {
+                                final RenderBox renderObject = context.findRenderObject() as RenderBox;
+                                final localPosition = renderObject.globalToLocal(position);
+                                return Offset(
+                                  localPosition.dx,
+                                  localPosition.dy,
+                                );
+                              },
+                              childWhenDragging: isRevealed ? Container(
+                                width: layoutInfo.cardWidth,
+                                height: layoutInfo.cardHeight,
+                                color: Colors.transparent,
+                              ) : Container(),
+                              maxSimultaneousDrags: canDragCard(pileIndex, cardIndex) ? 1 : 0,
+                              child: Opacity(
+                                opacity: isDragging ? 0.0 : 1.0,
+                                child: PlayingCard(
+                                  card: tableauPiles[pileIndex][cardIndex],
+                                  isFaceUp: isRevealed,
+                                  width: layoutInfo.cardWidth,
+                                  height: layoutInfo.cardHeight,
+                                ),
+                              ),
+                              onDragStarted: () {
+                                onDragStarted(pileIndex, cardIndex);
+                              },
+                              onDragEnd: (_) => onDragEnd(),  // Fix DragEndCallback type
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class DealingAnimation extends StatelessWidget {
+  final TableauLayoutInfo layoutInfo;
+  final List<Card> cardsToAnimate;
+  final List<bool> cardsFaceUp;
+  final List<AnimationController> dealingControllers;
+  final List<Animation<Offset>> dealingAnimations;
+
+  const DealingAnimation({
+    super.key,
+    required this.layoutInfo,
+    required this.cardsToAnimate,
+    required this.cardsFaceUp,
+    required this.dealingControllers,
+    required this.dealingAnimations,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: List.generate(cardsToAnimate.length, (index) {
+        return AnimatedBuilder(
+          animation: dealingControllers[index],
+          builder: (context, child) {
+            final position = dealingAnimations[index].value;
+            final deckPosition = layoutInfo.getDeckPosition();
+            final targetPosition = layoutInfo.getCardPosition(
+              position.dx.toInt(),
+              position.dy.toInt(),
+            );
+            
+            // Enhanced rotation calculation
+            // More spins during arc, gradually settling to 0
+            final progress = dealingControllers[index].value;
+            final rotations = 2.0; // Number of full rotations during flight
+            final rotation = progress < 0.8 
+                ? (progress * rotations * 2 * 3.14159) 
+                : ((1.0 - progress) * 5) * (rotations * 2 * 3.14159 % (2 * 3.14159)); // Settle to 0
+            
+            // Enhanced scale effect
+            final scale = 1.0 + (0.15 * sin(progress * 3.14159)); // Smooth scale pulse
+            
+            return Positioned(
+              left: deckPosition.dx + (targetPosition.dx - deckPosition.dx) * progress,
+              top: deckPosition.dy + (targetPosition.dy - deckPosition.dy) * progress,
+              child: Transform(
+                transform: Matrix4.identity()
+                  ..setEntry(3, 2, 0.002) // Slightly enhanced perspective
+                  ..rotateZ(rotation)
+                  ..scale(scale),
+                alignment: Alignment.center,
+                child: SizedBox(
+                  width: layoutInfo.cardWidth,
+                  height: layoutInfo.cardHeight,
+                  child: PlayingCard(
+                    card: cardsToAnimate[index],
+                    isFaceUp: cardsFaceUp[index] && progress > 0.6,
+                    width: layoutInfo.cardWidth,
+                    height: layoutInfo.cardHeight,
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      }),
     );
   }
 }
